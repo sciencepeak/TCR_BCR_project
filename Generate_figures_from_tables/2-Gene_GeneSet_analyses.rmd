@@ -1,0 +1,291 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+Load libraries
+```{r echo=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+```
+
+Input tables
+```{r}
+combined_table <- readRDS(file="Combined_MAPKi_ICI_gene_gsva_tcrbcr_MCPcounter.rds")
+```
+
+Generate boxplots from the combined table
+```{r}
+library(ggplot2)
+library(ggpubr)
+
+draw_boxplot <- function(dataTable,colorList,itemName,minY,maxY,statCompList,metrics){
+    y_axis_label <- bquote(paste(italic(.(itemName))," ",(.(metrics))))
+    #print(colorList[dataTable$type])
+    y = ggplot2::ggplot(data=dataTable,   
+                        aes(x=condition,y=value)) +
+        geom_boxplot(outlier.shape = NA,notch=F,lwd=0.1,fill="white")+
+        geom_jitter(size = 0.5, width = 0.25, alpha = 0.8, na.rm = TRUE,
+                              #aes(color = colorList[type]))+
+                                aes_string(color = "type"))+
+        facet_wrap(as.formula(paste0("~", "group")), strip.position = "top") +
+        stat_compare_means(comparisons = statCompList, method = "wilcox.test", 
+                           size = 1.75, bracket.size = 0.1) +
+      ylim(minY,maxY)+
+      ylab(y_axis_label) +
+      theme(
+        #axis.text.x = element_blank(),
+        axis.text.x = element_text(size = 8, angle = 45, hjust = 1, vjust = 1.1),
+        axis.title.y = element_text(size = 6, margin = margin(t = 0, r = 0.5, b = 0, 
+                                                              l = 0, unit = "pt")),
+        axis.text.y = element_text(size=8),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        strip.text.x = element_blank(),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        panel.spacing = unit(1.5, "pt"))
+        #plot.title=element_text(face = "italic",size=32))
+    #+
+    #  ggtitle(itemName)
+  return(y)
+}
+```
+
+```{r}
+library(ggplot2)
+library(ggpubr)
+
+draw_boxplot_by_PTOT <- function(dataTable,colorList,itemName,minY,maxY,statCompList,metrics){
+    y_axis_label <- bquote(paste(italic(.(itemName))," ",(.(metrics))))
+    #print(colorList[dataTable$type])
+    y = ggplot2::ggplot(data=dataTable,   
+                        aes(x=group,y=value)) +
+        geom_boxplot(outlier.shape = NA,notch=F,lwd=0.1,fill="white")+
+        geom_jitter(size = 0.5, width = 0.25, alpha = 0.8, na.rm = TRUE,
+                              #aes(color = colorList[type]))+
+                                aes_string(color = "type"))+
+        facet_wrap(as.formula(paste0("~", "condition")), strip.position = "top") +
+        stat_compare_means(comparisons = statCompList, method = "wilcox.test", 
+                           size = 1.75, bracket.size = 0.1) +
+      ylim(minY,maxY)+
+      ylab(y_axis_label) +
+      theme(
+        #axis.text.x = element_blank(),
+        axis.text.x = element_text(size = 8, angle = 45, hjust = 1, vjust = 1.1),
+        axis.title.y = element_text(size = 6, margin = margin(t = 0, r = 0.5, b = 0, 
+                                                              l = 0, unit = "pt")),
+        axis.text.y = element_text(size=8),
+        axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        legend.position = "none",
+        strip.text.x = element_blank(),
+        strip.background = element_blank(),
+        strip.placement = "outside",
+        panel.spacing = unit(1.5, "pt"))
+        #plot.title=element_text(face = "italic",size=32))
+    #+
+    #  ggtitle(itemName)
+  return(y)
+}
+```
+
+
+Print gene boxplots
+```{r,warning=FALSE}
+
+geneList <- c("CD8B","CD3D","CD19","CXCR5","CXCL13",
+              "IL21","IL21R","IFNG","TOX","GZMB",
+              "PRF1","CD274","TGFB1","PDCD1","CCL21",
+              "CCL19","CCR7","BCL6","TCF7","CD79A",
+              "IGHM","IGHG1","IGHA1","CD40","CD40LG")
+itemList <- geneList
+
+stat_comparison_list <- list(c(1,2),c(1,3),c(2,3))
+stat_comparison_list_PTOT <- list(c(1,2))
+
+treatment1 <- "ICI"
+index = 1
+item1 = "CD8B"
+panel_list <- list()
+panel_list_PTOT<- list()
+
+for(item1 in itemList){
+  
+  expr_list <- combined_table %>% pull(.,var=item1)
+  expr_max <- max(expr_list)+sd(expr_list)*2
+  expr_min <- min(expr_list)-1
+  
+  subset_table2 <- combined_table %>% select(all_of(c(groupingColumn,item1)))
+    
+  colnames(subset_table2) <- c("condition","type","group","value")
+  subset_table2$condition <- factor(subset_table2$condition,
+                                   levels=c("PT","OT-R","OT-NR")) 
+
+  subset_table2$type <-factor(subset_table2$type,
+          levels=c("2015_Cell_WH","2015_JCI_LK","2020_NC_GA","2017_Cell_NR"))
+  
+  subset_table2$group <-factor(subset_table2$group,levels=c("ICI","MAPKi"))
+ 
+  panel_list[[index]] <- draw_boxplot(subset_table2,color_list,item1,                               
+                                      expr_min,expr_max,stat_comparison_list,"log2 cpm")
+
+  panel_list_PTOT[[index]] <- draw_boxplot_by_PTOT(subset_table2,color_list,item1, 
+                                                   expr_min,expr_max,stat_comparison_list_PTOT,"log2 cpm")
+  
+  index <- index+1
+}
+
+
+plot <- ggarrange(plotlist=panel_list,ncol=5,nrow=5)
+plot_PTOT <- ggarrange(plotlist=panel_list_PTOT,ncol=5,nrow=5)
+
+#height1 <- 55 * length(itemList)/4
+ggsave(filename = paste0("Genes.boxplot.pdf"),
+           plot = plot,
+           device = "pdf",
+           width = 180,
+           height = 210,
+           units = "mm")
+
+ggsave(filename = paste0("Genes.boxplot.byPTOT.pdf"),
+           plot = plot_PTOT,
+           device = "pdf",
+           width = 180,
+           height = 210,
+           units = "mm")
+
+```
+
+Print gene boxplots normalized by CD8B
+```{r,warning=FALSE}
+
+geneList <- c("CD3D","CD8B","CD19","CXCL13","IL21","IL21R",
+              "IFNG","TOX","GZMB","PRF1","CD274","TGFB1",
+              "PDCD1","CCL21","CCL19","CCR7","BCL6","TCF7",
+              "CD79A","IGHM","IGHG1","IGHA1","CD40","CD40LG")
+itemList <- geneList
+
+stat_comparison_list <- list(c(1,2),c(1,3),c(2,3))
+stat_comparison_list_PTOT <- list(c(1,2))
+
+treatment1 <- "ICI"
+index = 1
+item1 = "CD19"
+ratio_comparator = "CD3D"
+panel_list <- list()
+panel_list_PTOT<- list()
+
+for(item1 in itemList){
+  
+  expr_list1 <- combined_table %>% pull(.,var=item1)
+  expr_list2 <- combined_table %>% pull(.,var=ratio_comparator)
+  expr_list <- expr_list1-expr_list2
+  
+  expr_max <- max(expr_list)+sd(expr_list)*2
+  expr_min <- min(expr_list)-1
+  
+  subset_table2 <- combined_table %>% select(all_of(c(groupingColumn,item1)))
+  colnames(subset_table2) <- c("condition","type","group","value")
+  
+  #overwrite with log ratio to CD8B 
+  subset_table2$value <- expr_list
+  
+  subset_table2$condition <- factor(subset_table2$condition,
+                                   levels=c("PT","OT-R","OT-NR")) 
+
+  subset_table2$type <-factor(subset_table2$type,
+          levels=c("2015_Cell_WH","2015_JCI_LK","2020_NC_GA","2017_Cell_NR"))
+  
+  subset_table2$group <-factor(subset_table2$group,levels=c("ICI","MAPKi"))
+ 
+  panel_list[[index]] <- draw_boxplot_by_PTOT(subset_table2,color_list,item1,                               expr_min,expr_max,stat_comparison_list,paste0(ratio_comparator," ratio"))
+  
+  panel_list_PTOT[[index]] <- draw_boxplot_by_PTOT(subset_table2,color_list,item1,                               expr_min,expr_max,stat_comparison_list_PTOT,paste0(ratio_comparator," ratio"))
+  
+  index <- index+1
+}
+
+
+plot <- ggarrange(plotlist=panel_list,ncol=5,nrow=5)
+plot_PTOT <- ggarrange(plotlist=panel_list_PTOT,ncol=5,nrow=5)
+
+ggsave(filename = paste0("Genes.boxplot.",ratio_comparator,".ratio.pdf"),
+           plot = plot,
+           device = "pdf",
+           width = 180,
+           height = 210,
+           units = "mm")
+
+ggsave(filename = paste0("Genes.boxplot.byPTOT.",ratio_comparator,".ratio.pdf"),
+           plot = plot_PTOT,
+           device = "pdf",
+           width = 180,
+           height = 210,
+           units = "mm")
+
+```
+
+
+Print geneset boxplots
+```{r, warning=FALSE}
+MCP_list <- rownames(MCP_counter_table1)
+itemList <- union(gsva_list, MCP_list[c(1:2,4:10)])
+itemList
+
+stat_comparison_list <- list(c(1,2),c(1,3),c(2,3))
+
+treatment1 <- "ICI"
+index = 1
+item1 = "h_all--HALLMARK_INTERFERON_GAMMA_RESPONSE"
+panel_list <- list()
+
+for(item1 in itemList){
+  
+  expr_list <- combined_table %>% pull(.,var=item1)
+  expr_max <- max(expr_list)+1.5*sd(expr_list)
+  expr_min <- min(expr_list)
+  
+  subset_table2 <- combined_table %>% select(all_of(c(groupingColumn,item1)))
+    
+  colnames(subset_table2) <- c("condition","type","group","value")
+  subset_table2$condition <- factor(subset_table2$condition,
+                                    levels=c("PT","OT-R","OT-NR")) 
+
+  subset_table2$type <-factor(subset_table2$type,
+                              levels=c("2015_Cell_WH","2015_JCI_LK",
+                                       "2020_NC_GA","2017_Cell_NR"))
+  
+  subset_table2$group <-factor(subset_table2$group,levels=c("ICI","MAPKi"))
+  panel_list[[index]] <- draw_boxplot(subset_table2,color_list,item1,                               
+                                      expr_min,expr_max,stat_comparison_list,"GSVA")
+
+  index <- index+1
+}
+
+plot <- ggarrange(plotlist=panel_list,ncol=4,nrow=length(itemList)/4)
+  
+height1 <- 55 * length(itemList)/4
+ggsave(filename = paste0("Genesets.boxplot.pdf"),
+           plot = plot,
+           device = "pdf",
+           width = 183,
+           height = height1,
+           units = "mm")
+
+```
+
+
+

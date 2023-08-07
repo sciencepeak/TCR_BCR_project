@@ -1,0 +1,147 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+Load libraries
+```{r echo=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+library(stringr) 
+```
+
+Load tables
+```{r}
+#comb_excel_table <- "../../Supp_table/Supp. Table 1. Gene expression, gene scores, TCR BCR metrics and clinical data of the datasets used in this study.xlsx"
+SuppTable1 <- "Supp. Table 1. Clinical Characteristics, Gene Expression and GeneSet Enrichments across the bulk RNA-seq datasets.xlsx"
+SuppTable4 <- "Supp. Table 4. Univariate and Multivariate Survival Analysis on T cell and B cell related factors.xlsx"
+expr_table_file <- "expression_matrix.log2_cpm.BE_removed.filtered.csv.bz2"
+
+expr_table <- read.csv(expr_table_file,row.names = 1,check.names = F) %>% as.data.frame()
+
+sample_table_w_sur <- read_excel(SuppTable1,sheet = "A",skip=4) %>% as.data.frame()
+MCP_counter_table <- read_excel(SuppTable1,sheet = "D",skip=4) %>% as.data.frame()
+gsva_table <- read_excel(SuppTable1,sheet = "E",skip=4) %>% as.data.frame()
+
+
+tcr_bcr_scoper_table <- read_excel(SuppTable4,sheet = "A",skip=4) %>% as.data.frame()
+
+```
+
+
+Insert the classification of the samples
+Need to have sample name - concat bioproject_name and biosample_accession
+Need to have MAPKi.PT MAPKi.OT-R MAPKi.OT-NR
+
+```{r}
+ICI_datasets <- c("2017_Cell_NR","2020_NC_GA","2018_Cell_MS")
+MAPKi_datasets <- c("2015_Cell_WH","2015_JCI_LK")
+```
+
+```{r}
+getBiospyGroup <- function (basic_category1){
+  return(case_when(grepl("pre-treatment",basic_category1,fixed=T) ~ "PT",
+                   grepl("non-responding",basic_category1,fixed=T) ~ "OT-NR",
+                   grepl("responding",basic_category1,fixed=T) ~ "OT-R",
+                   TRUE~"NA"))
+}
+
+getBiospyTime <- function (basic_category1){
+  return(case_when(grepl("pre-treatment",basic_category1,fixed=T) ~ "PT",
+                   grepl("responding",basic_category1,fixed=T) ~ "OT",
+                   TRUE~"NA"))
+}
+
+sample_table_w_sur_annot <- sample_table_w_sur %>%            
+ mutate(.,sample_ID=paste(bioproject_name,biosample_accession,sep=".")) %>%
+ mutate(.,treatment=case_when(bioproject_name %in% MAPKi_datasets ~"MAPKi",
+                              bioproject_name %in% ICI_datasets ~"ICI",
+                              TRUE~"NA")) %>%
+ mutate(.,biopsy_group=paste(treatment,getBiospyGroup(basic_category),sep="."))%>%
+ mutate(.,biopsy_time=paste(treatment,getBiospyTime(basic_category),sep="."))  %>%
+ mutate(.,biopsy_group1=getBiospyGroup(basic_category))%>%
+ mutate(.,biopsy_time1=ifelse((biopsy_group=="MAPKi.OT-NR"|patient_biospecimen=="Pt-UID-20_D726"),
+                              "OT.NotUsed",getBiospyTime(basic_category)))
+     
+table(sample_table_w_sur_annot$treatment)
+table(sample_table_w_sur_annot$biopsy_group)
+
+```
+
+
+Generate combined table with gene and gsva expr of interest
+```{r}
+geneList <- c("CD8B","CD3D","CD19","CXCR5","CXCL13","IFNG",
+              "IL21","IL21R","TOX","GZMB","PRF1","CD274","TGFB1",
+              "CCL21","CCL19","CXCR6",
+              "TCF7","CCR7","PDCD1","BCL6",
+              "CD79A","IGHM","IGHD","IGHG1","CD40","CD40LG",
+              "IGHA1","CXCR4","MS4A1","CD22")
+
+subset_expr <- t(expr_table[geneList,]) %>% as.data.frame(.)
+subset_expr$sample_ID <- rownames(subset_expr)
+
+#subset_expr1 <- subset_expr %>% mutate(across('sample_ID', str_replace, 'X2015', '2015'))
+```
+
+```{r}
+##GSVA
+gsva_list_logical <- grepl("(INTERFERON_GAMMA|INTERFERON_ALPHA|IFNG|IFNA|IFN_GAMMA|IFN_ALPHA|IFN_|x_all)",gsva_table$Geneset,perl=T) &
+                     !(grepl("(^c7|DN$)",gsva_table$Geneset,perl=T))
+gsva_list <- gsva_table$Geneset[gsva_list_logical]
+gsva_list <- gsva_list[2:length(gsva_list)]
+
+rownames(gsva_table) <- gsva_table$Geneset
+gsva_table1 <- gsva_table %>% select(-Geneset)
+
+subset_gsva <- t(gsva_table1[gsva_list,]) %>% as.data.frame(.)
+subset_gsva$sample_ID <- rownames(subset_gsva)
+subset_expr_gsva <- subset_expr1 %>% left_join(subset_gsva, by="sample_ID")
+
+                                               
+##MCP counter
+rownames(MCP_counter_table) <- MCP_counter_table$Cell_population
+MCP_counter_table1 <- MCP_counter_table %>% select(-Cell_population)
+MCP_counter_table2 <- t(MCP_counter_table1) %>% as.data.frame()
+MCP_counter_table2$sample_ID <- rownames(MCP_counter_table2)
+
+subset_expr_gsva_MCP <- subset_expr_gsva %>% left_join(MCP_counter_table2, by="sample_ID")
+
+
+##TCR BCR and SCOPER
+tcr_bcr_scoper_table1 <- tcr_bcr_scoper_table %>% as.data.frame() %>%
+                         select(-contains("count")) %>%
+                         select(-contains("IGHD")) %>% 
+                         select(-contains("cpm")) %>% 
+                         as.data.frame(.)
+
+sample_table_w_sur_annot_TCRBCR <- sample_table_w_sur_annot %>% left_join(tcr_bcr_scoper_table1
+                                                                          , by=c("sample_ID"="Sample",
+                                                                                                      "biosample_accession",
+                                                                                                      "bioproject_name",
+                                                                                                      "patient_biospecimen",
+                                                                                                      "basic_category"))
+
+combined_table <- sample_table_w_sur_annot_TCRBCR %>% left_join(subset_expr_gsva_MCP)
+
+groupingColumn <- c("biopsy_group1","bioproject_name","treatment")
+color_list <- c("purple","blue","red","green")
+combined_table$biopsy_group <- factor(combined_table$biopsy_group,
+                                 levels=c("ICI.PT","ICI.OT-R","ICI.OT-NR",
+                                    "MAPKi.PT","MAPKi.OT-R","MAPKi.OT-NR")) 
+combined_table$biopsy_group1 <- factor(combined_table$biopsy_group1,
+                                   levels=c("PT","OT-R","OT-NR")) 
+
+combined_table$bioproject_name <-factor(combined_table$bioproject_name,
+          levels=c("2015_Cell_WH","2015_JCI_LK","2020_NC_GA","2017_Cell_NR","2018_Cell_MS"))
+
+saveRDS(combined_table,file="Combined_MAPKi_ICI_gene_gsva_tcrbcr_MCPcounter.rds")
+```
+
+

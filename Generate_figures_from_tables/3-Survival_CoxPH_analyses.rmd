@@ -1,0 +1,704 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+Load libraries
+```{r echo=F}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+
+#install.packages("rJava")
+library(xlsx)
+```
+
+Input tables
+```{r}
+combined_table_all <- readRDS(file="Combined_MAPKi_ICI_gene_gsva_tcrbcr_MCPcounter.rds")
+combined_table <- combined_table_all
+itemList <- colnames(combined_table)[17:ncol(combined_table)]
+
+#remove variables with "proportions"
+itemList0<- grep("proportion",itemList,value=T,invert=T)
+
+#remove CXCR4, CD22, MCP counter of other immune cells from
+# list of variable to test
+#7/5/22 remove Chemokine gene Messina, germline IGH clonality and diversity
+
+to_remove <- c("CXCR4","CXCR6","TGFB1","TCF7","BCL6","CD274","CCR7","IL21",
+               "TOX","IL21R","CCL19","CD22","CCL21","IGHA1","IGHG1","IGHM","IGHD",
+               "c2_cgp--DER_IFN_ALPHA_RESPONSE_UP",        
+               "c2_cgp--RADAEVA_RESPONSE_TO_IFNA1_UP",     
+               "c2_cgp--DER_IFN_BETA_RESPONSE_UP",
+               "c2_cgp--MOSERLE_IFNA_RESPONSE",
+               "h_all--HALLMARK_INTERFERON_ALPHA_RESPONSE",
+               "x_all--CHEMOKINE_12_GENE_Messina",
+               "SHM_occurrence_frequency",
+               "Cytotoxic lymphocytes","Fibroblasts","Endothelial cells",
+               "Neutrophils","Monocytic lineage","Monocytic lineage",
+               "Myeloid dendritic cells","T cells","NK cells")
+
+itemList1 <- setdiff(itemList0,to_remove)
+
+#remove the prefix from the gene set names i.e. "c2_cgp--, h_all--" 
+nameList1 <- gsub("^[\\w\\_]+\\-\\-","",itemList1,perl=T)
+nameList1
+
+name_mapping <- list()
+for(i in 1:length(itemList1)){
+  name_mapping[[itemList1[i]]] <- nameList1[i]
+}
+```
+
+Generate correlation matrix
+```{r}
+library(Hmisc)
+library(klaR)
+library(RColorBrewer)
+library(dplyr)
+
+#only the bulk RNAseq
+ICI_datasets <- c("2017_Cell_NR","2020_NC_GA")
+MAPKi_datasets <- c("2015_Cell_WH","2015_JCI_LK")
+
+combined_table <- combined_table_all
+expr_table_for_corr <- combined_table %>% 
+                       filter(bioproject_name %in% c(ICI_datasets,MAPKi_datasets)) %>%
+                       as.data.frame()
+
+rownames(expr_table_for_corr) <- expr_table_for_corr$sample_ID
+
+expr_table_for_corr1 <- expr_table_for_corr %>%
+                        .[,itemList1] %>%
+                        mutate_if(is.character, as.numeric)
+##rename with shortened gene set names
+colnames(expr_table_for_corr1) <- nameList1
+
+cormat1<-rcorr(as.matrix(expr_table_for_corr1),type="spearman")
+#signif(cormat1$r, 2)
+#signif(cormat1$P, 2)
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+
+pairwise_corr <- flattenCorrMatrix(cormat1$r, cormat1$P)
+write.csv(pairwise_corr,file="pairwise_corr.allVariable.csv")
+
+hc <- hclust(as.dist((1-cormat1$r)/2))
+clustering  <- cutree(hc,10)
+row_annot1 <- data.frame(row.names=nameList1,clusterID=as.factor(as.character(clustering)))
+row_annot1$clusterID <- factor(row_annot1$clusterID,levels=as.character(c(1:10)))
+
+cluster_color <- brewer.pal(10,"Paired")
+names(cluster_color) <- levels(row_annot1$clusterID)
+color_list <- list(clusterID=cluster_color)
+
+library(pheatmap)
+library(RColorBrewer)
+
+ggheatmap <- pheatmap(cormat1$r, 
+                      fontsize = 6,
+                      cluster_cols = hc,
+                      cluster_rows = hc,
+                      treeheight_row = 30,
+                      treeheight_col = 30,
+                      legend_breaks = c(-0.3,0.3,max(cormat1$r)),
+                      annotation_row = row_annot1,
+                      annotation_colors = color_list,
+                      display_numbers = T,
+                      fontsize_number =3)
+
+ggsave(filename = "cor.mat.allVar.102422.pdf",
+           plot = ggheatmap,
+           device = "pdf",
+           width = 183,
+           height = 143,
+           units = "mm")
+
+## create mapping from item name to cluster ID
+clustering_annot <- list()
+  
+for(item in rownames(row_annot1)){
+  clustering_annot[[item]] <- as.character(row_annot1[item,1])
+}
+```
+
+Generate Kaplan Meier plot using ggsurv
+```{r}
+library(survival)
+library(survminer)
+library(tidyverse)
+
+generateKaplanMeier <- function(dataTable,varName,survival_label){
+  fit <- survfit(Surv(Survival,Status)~Median_and_above,data = dataTable)
+  y <- ggsurvplot(fit, data = dataTable,
+           xlab = survival_label,
+           ylab = "Survival probability",
+           #size = 2,
+           #censor.size = 9,
+           linetype = "solid", # strata change line type by groups
+           surv.median.line = "hv", # Specify median survival
+           conf.int = TRUE,          # Add confidence interval
+           pval = TRUE,              # Add p-value
+           pval.method = TRUE,
+           pval.size = 10,
+           ncensor.plot = FALSE,
+           risk.table = TRUE,        # Add risk table
+           #risk.table.col = "black",  # Risk table color by groups
+           risk.table.col = "strata", 
+           risk.table.height= 0.3,
+           risk.table.fontsize = 10,
+           risk.table.y.text = FALSE,
+           risk.table.y.text.col = TRUE,
+           
+           legend.labs = c("Median and above","Below median"),
+           palette = c("orchid2", "dodgerblue2", "springgreen2", "saddlebrown")
+       )  + theme_survminer(
+         font.main = c(24, "bold", "black"),
+         font.submain = c(24, "plain", "black"),
+         font.caption = c(24, "plain", "orange"),
+         font.x = c(24, "plain", "black"),
+         font.y = c(24, "plain", "black"),
+         font.tickslab = c(24, "plain", "black"),
+         font.legend = c(24, "plain", "black"),
+         legend = "top")
+  y
+}
+
+computeHR <- function(dataTable){
+  coxPH1 <- summary(coxph(Surv(Survival,Status)~(Median_and_above),data = dataTable))
+  
+  HR <- coxPH1$conf.int["Median_and_aboveTRUE","exp(coef)"]
+  lowCI <- coxPH1$conf.int["Median_and_aboveTRUE","lower .95"]
+  highCI <- coxPH1$conf.int["Median_and_aboveTRUE","upper .95"]
+  HRprob <-  coxPH1$coefficients["Median_and_aboveTRUE","Pr(>|z|)"]
+  logRankP <- coxPH1$sctest[["pvalue"]]
+  return(c(HR,lowCI,highCI,HRprob,logRankP))
+}
+```
+
+Reanalyze the survival data, ICI & MAPKi
+Prepare data
+```{r,warning=F}
+detach("package:klaR")
+detach("package:Hmisc")
+detach("package:MASS")
+
+# set_name <- "ICI.scRNAseq.MAPKi"
+# ICI_datasets <- c("2018_Cell_MS")
+# MAPKi_datasets <- c("2015_Cell_WH","2015_JCI_LK")
+
+set_name <- "ICI.MAPKi.bulk"
+ICI_datasets <- c("2017_Cell_NR","2020_NC_GA")
+MAPKi_datasets <- c("2015_Cell_WH","2015_JCI_LK")
+
+
+combined_table <- combined_table_all
+combined_table <- combined_table %>% filter(bioproject_name %in% c(ICI_datasets,MAPKi_datasets))
+
+combined_table <- as.data.frame(combined_table)
+combined_table$overall_survival_day <- as.numeric(combined_table$overall_survival_day)
+combined_table$progression_free_survival_day <- as.numeric(combined_table$progression_free_survival_day)
+
+treatment <- c("ICI","MAPKi")               
+biopsy_timing <- c("PT","OT")
+
+groupingColumn <- list()
+groupingColumn[["MAPKi"]] <- c("progression_free_survival_day",
+                               "PFS_censoring_status")
+
+groupingColumn[["ICI"]]   <- c("overall_survival_day",
+                                "OS_censoring_status")
+survival_label <- list()
+survival_label[["MAPKi"]] <- "PFS"
+survival_label[["ICI"]] <- "OS"
+
+biopsy_time_list <- levels(as.factor(combined_table$biopsy_time))
+```
+
+
+
+Iterate through the different variables and generate KM and HR statistics
+```{r,warning=F}
+library(dplyr)
+library(tidyr)
+
+## get all of the tested variables
+## since the T cell markers,
+## IFN gene sets are highly correlated, only test one of them
+## itemList <- itemList1[c(-11:-17)]
+
+#itemList1 <- c("TRB.clonality","TRB.diversity","IGH.clonality","IGH.diversity")
+
+HR_List <- list()
+for(timing1 in biopsy_time_list){
+  HR_List[[timing1]] <- data.frame(Item = character(),
+                                   clusterID = character(),
+                                   HR=numeric(), 
+                                   lowerCI=numeric(),
+                                   upperCI = numeric(),
+                                    HR.P=numeric(),
+                                    logRank.P=numeric(),
+                                    stringsAsFactors = FALSE)
+}
+
+drawKM <- T
+summaryFunction <- "maxVal"
+item1 <- "IGH.diversity"
+treatment1 <- "ICI"
+biopsy_timing1 <- "OT"
+index <- 1
+item_index <- 1
+graph_height <- 183
+graph_width <- 183
+panel_list <- list()
+
+for(item1 in itemList1){
+  panel_list <- list()
+  index <- 1
+
+  for(biopsy_timing1 in biopsy_timing){
+      for(treatment1 in treatment){
+  
+        print(paste(item1,treatment1,biopsy_timing1,sep="."))
+        subset_table1 <- combined_table %>% 
+              filter(.,treatment==treatment1 & biopsy_time1 == biopsy_timing1) %>% 
+                       select(all_of(c("patient_uid","bioproject_name",
+                                       groupingColumn[[treatment1]],item1)))
+        
+        colnames(subset_table1) <- c("patient_uid","bioproject_name",
+                                     "Survival","Status1","Variable")
+        subset_table1$Variable <- as.numeric(subset_table1$Variable)  
+        
+        ## when there are multiple tumor samples, 
+        ## select the one with the highest/lowest value of Variable  
+        subset_table2 <- subset_table1 %>% 
+                       filter(!(is.na(Variable))) %>%
+                       group_by(patient_uid,bioproject_name) %>%
+                       #mutate(Variable1=min(Variable)) %>%
+                       mutate(Variable1=case_when(
+                         summaryFunction=="maxVal" ~ max(Variable),
+                         summaryFunction=="minVal" ~ min(Variable),
+                         TRUE ~ 1)) %>%
+                       ungroup %>%
+                       select(all_of(c("patient_uid","bioproject_name",
+                                       "Survival","Status1","Variable1"))) %>%
+                       unique %>%
+                       as.data.frame()
+        
+        if(nrow(subset_table2) < 10){
+          next
+        }
+        
+        colnames(subset_table2) <- c("patient_uid","bioproject_name",
+                                     "Survival","Status1","Variable")
+        expr_list <- subset_table2 %>% pull(.,var="Variable")
+        expr_median <- median(expr_list,na.rm = T)
+        
+        ##stratify by whether the sample's value is median and above or not
+        subset_table3 <- subset_table2 %>%
+                       mutate(Median_and_above = (Variable >= expr_median)) %>%
+                       mutate(Status = case_when(Status1 == "censored" ~ 0,
+                                                 TRUE ~ 1))
+        
+        subset_table3$Median_and_above <- factor(subset_table3$Median_and_above,
+                                                 levels=c(T,F))
+        
+        if(drawKM){
+          panel_list[[index]] <- generateKaplanMeier(subset_table3,
+                                                    item1,survival_label[[treatment1]])
+        }        
+        
+        ##this is to show HR value when median and above == TRUE
+        subset_table3$Median_and_above <-factor(subset_table3$Median_and_above,
+                                            levels=c(F,T))
+        coxPH1 <- computeHR(subset_table3)
+        group1 <- paste(treatment1,biopsy_timing1,sep=".")
+        HR_List[[group1]][item_index,]<-c(name_mapping[[item1]],
+                                          clustering_annot[[name_mapping[[item1]]]],
+                                          coxPH1)
+        index <- index+1
+      }
+    }
+ 
+  if(drawKM){
+    if(index-1 == 1){
+      #one panel figure
+      ncol1 = 1
+      nrow1 = 1
+      width1 <- graph_width
+      height1 <- graph_height
+      
+    } else{ 
+      if(index-1 == length(treatment)){
+      #one row figure (2 panels)
+      ncol1 = length(treatment)
+      nrow1 = 1
+      width1 <- ncol1*graph_width
+      height1 <- graph_height*1.25
+    }else{
+      if(index-1 > 2){
+      #multirow figure, each row is 2 columns
+      ncol1 = length(treatment)
+      nrow1 = ceiling((index-1)/length(treatment))
+      width1 <- ncol1*graph_width
+      height1 <- nrow1*graph_height*1.25
+    }}}}
+    
+    plot1 <- arrange_ggsurvplots(
+          panel_list,
+          title = paste0(item1),
+          ncol = ncol1,
+          nrow = nrow1,
+          print = FALSE
+    )
+  
+    ggsave(filename = paste(item1,"survival",set_name,summaryFunction,"pdf",sep="."),
+             plot = plot1,
+             device = "pdf",
+             width = width1,
+             height = height1,
+             units = "mm")
+  
+  item_index <- item_index+1
+}
+
+
+library(xlsx)
+appendFlag <- F
+union_ItemList <- c() 
+excel_filename <- paste("UnivariateHR",set_name,
+                        summaryFunction,"102422.xlsx",sep=".")
+
+for(timing1 in biopsy_time_list){
+  tempDF <- HR_List[[timing1]]
+  tempDF$HR.P <- as.numeric(tempDF$HR.P)
+  tempDF$logRank.P <- as.numeric(tempDF$logRank.P)
+  tempDF$HR.P.Adj <- p.adjust(tempDF$HR.P) 
+  tempDF$logRank.P.Adj <- p.adjust(tempDF$logRank.P) 
+  write.xlsx(tempDF, file=excel_filename, 
+             sheetName=paste("UnivariateHR",timing1,sep="."), 
+             append=appendFlag,row.names=FALSE)
+  appendFlag <- T
+  
+  tempDF1 <- tempDF %>% group_by(clusterID) %>% 
+                        filter(logRank.P == min(logRank.P) & logRank.P <= 0.05) %>%
+                        arrange(logRank.P) %>% as.data.frame()
+  
+  if(nrow(tempDF1) == 0){
+    next
+  }
+  
+  union_ItemList <- union( union_ItemList, tempDF1$Item)
+  
+  write.xlsx(tempDF1, file=excel_filename, 
+             sheetName=paste("UnivarHR",timing1,"logRank","0.05",sep="."), 
+             append=appendFlag,row.names=FALSE)
+  appendFlag <- T
+}
+
+write_select_vars <- F
+if(write_select_vars){
+  union_ItemList_ICI_MAPKi <- union_ItemList
+  cat(union_ItemList_ICI_MAPKi,file="UnivarLogRank.SelectedVars.ICI.MAPKi.txt",sep="\n")
+}
+```
+
+
+
+PFS analysis only on Riaz 2017
+```{r,warning=F}
+dataset <- "2017_Cell_NR"
+itemList <- itemList1[c(-11:-17)]
+panel_list <- list()
+
+HR_List <- list()
+HR_List <- data.frame(Item = character(),
+                      Timing = character(),
+                      HR=numeric(), 
+                      lowerCI=numeric(),
+                      upperCI = numeric(),
+                      HR.P=numeric(),
+                      logRank.P=numeric(),
+                      stringsAsFactors = FALSE)
+
+
+summaryFunction <- "maxVal"
+item1 = "h_all--HALLMARK_INTERFERON_GAMMA_RESPONSE"
+treatment1 <- "ICI"
+biopsy_timing1 <- "OT"
+index <- 1
+item_index <- 1
+graph_height <- 183
+graph_width <- 183
+#plot1 <- list()
+
+for(item1 in itemList){
+  panel_list <- list()
+  index <- 1
+  skipGene <- 0
+  
+  for(biopsy_timing1 in biopsy_timing){
+      #for(treatment1 in treatment){
+      treatment1 <- "ICI"
+      ## not enough non-zero or non-NA data to compute survival
+      if(skipGene == 1){
+        next
+      }
+        
+      print(paste(item1,treatment1,biopsy_timing1,sep="."))
+      subset_table1 <- combined_table %>% 
+                     filter(.,treatment==treatment1 & 
+                              biopsy_time1 == biopsy_timing1 & 
+                              bioproject_name == dataset) %>% 
+                     select(all_of(c("patient_uid","bioproject_name",
+                                     groupingColumn[[treatment1]],item1)))
+      
+      colnames(subset_table1) <- c("patient_uid","bioproject_name",
+                                   "Survival","Status1","Variable")
+      subset_table1$Variable <- as.numeric(subset_table1$Variable)  
+        
+      subset_table2 <- subset_table1 %>% 
+                     filter(!(is.na(Variable))) %>%
+                     group_by(patient_uid,bioproject_name) %>%
+                     mutate(Variable1=case_when(
+                       summaryFunction=="maxVal" ~ max(Variable),
+                       summaryFunction=="minVal" ~ min(Variable),
+                       TRUE ~ 1)) %>%
+                     ungroup %>%
+                     select(all_of(c("patient_uid","bioproject_name",
+                                     "Survival","Status1","Variable1"))) %>%
+                     unique %>%
+                     as.data.frame()
+      
+      colnames(subset_table2) <- c("patient_uid","bioproject_name",
+                                   "Survival","Status1","Variable")
+      expr_list <- subset_table2 %>% pull(.,var="Variable")
+      expr_median <- median(expr_list,na.rm = T)
+      
+      subset_table3 <- subset_table2 %>%
+                     mutate(Median_and_above = (Variable >= expr_median)) %>%
+                     mutate(Status = case_when(Status1 == "censored" ~ 0,
+                                               TRUE ~ 1))
+      
+      subset_table3$Median_and_above <- factor(subset_table3$Median_and_above,
+                                               levels=c(T,F))
+      counts1 <- table(subset_table3$Median_and_above)
+      
+      if(counts1[[1]]==nrow(subset_table3)|counts1[[2]]==nrow(subset_table3)){
+         skipGene <- 1
+         next 
+      }
+      
+      panel_list[[index]] <- generateKaplanMeier(subset_table3,
+                                              item1,survival_label[[treatment1]])
+        #pdf(file="test.KMplot.pdf")
+        #print(panel_list[[index]])
+        #dev.off()
+      subset_table3$Median_and_above <-factor(subset_table3$Median_and_above,
+                                          levels=c(F,T))
+      coxPH1 <- computeHR(subset_table3)
+      group1 <- paste(treatment1,biopsy_timing1,sep=".")
+      HR_List[[group1]][item_index,]<-c(name_mapping[[item1]],
+                                        clustering_annot[[name_mapping[[item1]]]],
+                                        coxPH1)
+      index <- index+1
+    
+  }
+  
+#  index=5
+  if(index-1 == 1){
+    #one panel figure
+    ncol1 = 1
+    nrow1 = 1
+    width1 <- graph_width
+    height1 <- graph_height
+    
+  } else{ 
+    if(index-1 == 2){
+    #one row figure
+    ncol1 = 2
+    nrow1 = 1
+    width1 <- ncol1*graph_width*1.4
+    height1 <- graph_height*1.4
+  }else{
+    if(index-1 > 2){
+    #multirow figure
+    ncol1 = 2
+    nrow1 = ceiling((index-1)/length(treatment))
+    width1 <- ncol1*graph_width*1.3
+    height1 <- nrow1*graph_height*1.3
+  }}}
+  
+  plot1 <- arrange_ggsurvplots(
+        panel_list,
+        title = paste0(item1),
+        ncol = ncol1,
+        nrow = nrow1,
+        print = FALSE
+  )
+
+  ggsave(filename = paste0(item1,".Riaz2017.PFS."
+                           ,summaryFunction,".pdf"),
+           plot = plot1,
+           device = "pdf",
+           width = width1,
+           height = height1,
+           units = "mm")
+  
+  item_index <- item_index+1
+}
+
+library(xlsx)
+appendFlag <- F
+union_ItemList <- c() 
+
+for(timing1 in biopsy_time_list){
+  tempDF <- HR_List[[timing1]]
+  
+  if(nrow(tempDF) == 0){
+    next
+  }
+  
+  tempDF$HR.P.Adj <- p.adjust(tempDF$HR.P) 
+  tempDF$logRank.P.Adj <- p.adjust(tempDF$logRank.P) 
+  write.xlsx(tempDF, file=paste("UnivariateHR","Riaz2017.PFS",
+                                summaryFunction,"xlsx",sep="."), 
+             sheetName=paste("UnivarHR",timing1,sep="."), 
+             append=appendFlag,row.names=FALSE)
+  appendFlag <- T
+
+  tempDF1 <- tempDF %>% group_by(clusterID) %>% 
+                        filter(logRank.P == min(logRank.P) & logRank.P <= 0.05) %>%
+                        arrange(logRank.P) %>% as.data.frame()
+  
+  if(nrow(tempDF1) == 0){
+    next
+  }
+  
+  union_ItemList <- union( union_ItemList, tempDF1$Item)
+  write.xlsx(tempDF1, file=paste("UnivariateHR","Riaz2017.PFS",
+                                 summaryFunction,"xlsx",sep="."), 
+             sheetName=paste("UnivarHR",timing1,"logRank","0.05",sep="."), 
+             append=appendFlag,row.names=FALSE)
+  appendFlag <- T
+}
+
+union_ItemList_Riaz_PFS <- union_ItemList
+```
+Show if there are KM/HR difference by bioproject_name i.e batch (ans: NO)
+
+```{r}
+## get all of the tested variables
+test_batch <- F
+if(test_batch){
+  item1 <- "bioproject_name"
+  treatment1 <- "ICI"
+  biopsy_timing1 <- "OT"
+  index <- 1
+  
+  graph_height <- 183
+  graph_width <- 183
+  panel_list <- list()
+  HR_List <-  data.frame(Item = character(), HR=numeric(), 
+                         lowerCI=numeric(),upperCI = numeric(),
+                  HR.P=numeric(),logRank.P=numeric(),stringsAsFactors = FALSE)
+  
+  for(biopsy_timing1 in biopsy_timing){
+      for(treatment1 in treatment){
+  
+      print(paste(item1,treatment1,biopsy_timing1,sep="."))
+      subset_table1 <- combined_table %>% 
+                  filter(.,treatment==treatment1 & biopsy_time1 == biopsy_timing1) %>% 
+                  select(all_of(c("patient_uid",
+                                     groupingColumn[[treatment1]],item1)))
+      
+      colnames(subset_table1) <- c("patient_uid","Survival","Status1","Variable")
+      subset_table1$Variable <- factor(subset_table1$Variable, levels=sort(unique(subset_table1$Variable)))  
+  
+      subset_table3 <- subset_table1 %>%
+                     mutate(Median_and_above = Variable) %>%
+                     mutate(Status = case_when(Status1 == "censored" ~ 0,
+                                               TRUE ~ 1))
+      
+      panel_list[[index]] <- generateKaplanMeier(subset_table3,item1,survival_label[[treatment1]])
+        #pdf(file="test.KMplot.pdf")
+        #print(panel_list[[index]])
+        #dev.off()
+      coxPH1 <- summary(coxph(Surv(Survival,Status)~(Median_and_above),data = subset_table3))
+      coxPH1
+      
+      HR <- as.numeric(coxPH1$conf.int[1,1])
+      lowCI <- as.numeric(coxPH1$conf.int[1,3])
+      highCI <- as.numeric(coxPH1$conf.int[1,4])
+      HRprob <-  as.numeric(coxPH1$coefficients[1,5])
+      logRankP <- as.numeric(coxPH1$sctest[["pvalue"]])
+      
+      coxPH1_results <- c(HR,lowCI,highCI,HRprob,logRankP)
+      HR_List[index,]<-c(item1,coxPH1_results)
+        
+      index <- index+1
+    }
+  }
+   
+  if(index-1 == 1){
+    #one panel figure
+    ncol1 = 1
+    nrow1 = 1
+    width1 <- graph_width
+    height1 <- graph_height
+    
+  } else{ 
+    if(index-1 == length(treatment)){
+    #one row figure
+    ncol1 = length(treatment)
+    nrow1 = 1
+    width1 <- ncol1*graph_width*1.4
+    height1 <- graph_height*1.4
+  }else{
+    if(index-1 > 2){
+    #multirow figure
+    ncol1 = length(treatment)
+    nrow1 = ceiling((index-1)/length(treatment))
+    width1 <- ncol1*graph_width*1.3
+    height1 <- nrow1*graph_height*1.3
+  }}}
+  
+  plot1 <- arrange_ggsurvplots(
+        panel_list,
+        title = paste0(item1),
+        ncol = ncol1,
+        nrow = nrow1,
+        print = FALSE
+  )
+  
+  ggsave(filename = paste0(item1,".survival.pdf"),
+           plot = plot1,
+           device = "pdf",
+           width = width1,
+           height = height1,
+           units = "mm")
+  
+  write.csv(HR_List,file=paste0(item1,".HR.csv"))
+}
+```
+
+
+
